@@ -15,9 +15,19 @@ cabal-version:       >=1.10
 
 library
   hs-source-dirs:      src
-  exposed-modules:     Network.RSocket
+  exposed-modules:     RSocket
   build-depends:       base >= 4.7 && < 5
+                     , lens
+                     , attoparsec
+                     , bytestring
+                     , binary
+                     , binary-bits
+                     , containers
+                     , conduit
+                     , conduit-extra
+                     , template-haskell
   default-language:    Haskell2010
+  extensions:          TemplateHaskell
 
 test-suite rsocket-test
   type:                exitcode-stdio-1.0
