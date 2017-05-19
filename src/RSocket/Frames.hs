@@ -1,10 +1,10 @@
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE DeriveAnyClass #-}
 
 module RSocket.Frames where
 
 import           Data.Bits
-import qualified Data.ByteString.Lazy as BS
+import qualified Data.ByteString.Lazy as B
 import qualified Data.Map.Strict      as Map
 import           Data.Tuple
 import           Data.Word
@@ -15,6 +15,12 @@ import           Control.Lens         hiding (Empty)
 type StreamId = Word32
 type FrameFlags = Word16
 type ResumePosition = Int64
+type Metadata = Maybe B.ByteString 
+type Data = B.ByteString 
+type LeaseTTL = Word32
+type LeaseNumOfRequests = Word32 
+type RequestN = Word32
+  
 
 data FrameType
   = ReservedType
@@ -137,170 +143,65 @@ allFrameFlags a = Map.foldlWithKey' testFlag [] frameFlagMap
           | isFrameFlag a k = k : xs
           | otherwise = xs
 
-declareClassy
-  [d|
 
-  data Payload = Payload{payloadFlags :: ![FrameFlag],
-                         content :: BS.ByteString, metadata :: BS.ByteString}
-               deriving (Eq, Show)
-
-  data ResumeIdentificationToken = ResumeIdentificationToken [Word8]
-                                 deriving (Eq, Show, Ord)
-
-  data FrameHeader = FrameHeader{headerType :: !FrameType,
-                                 headerFlags :: ![FrameFlag], headerStreamId :: !StreamId}
-                   deriving (Eq, Show)
-
-  data FrameRequestBase = FrameRequestBase{requestN :: !Word32,
-                                           _reqBasePayload :: Payload}
-                        deriving (Eq, Show)
-  |]
-
-instance HasPayload FrameRequestBase where
-  payload = _reqBasePayload
+data ResumeIdentificationToken = ResumeIdentificationToken [Word8]
+                                deriving (Eq, Show, Ord)
 
 declareLenses
   [d|
+
+  data Payload = Payload{payloadFlags :: ![FrameFlag],
+                         content :: Data, metadata :: Metadata}
+               deriving (Eq, Show)
 
   data ProtocolVersion = ProtocolVersion{protocolVersionMajor ::
                                          Word16,
                                          protocolVersionMinor :: Word16}
                        deriving (Eq, Show, Ord)
 
-  data FrameRequestN = FrameRequestN{n :: !Word32,
-                                     _reqNframeHeader :: !FrameHeader}
-                     deriving (Eq, Show)
+  data FrameHeader = FrameHeader{headerType :: !FrameType,
+                                 headerFlags :: ![FrameFlag], headerStreamId :: !StreamId}
+                   deriving (Eq, Show)
 
-  data FrameRequestStream = FrameRequestStream{_reqStreamHeader ::
-                                               !FrameHeader,
-                                               _reqStreamBase :: !FrameRequestBase}
-                          deriving (Eq, Show)
-
-  data FrameRequestChannel = FrameRequestChannel{_reqChannelHeader ::
-                                                 !FrameHeader,
-                                                 _reqChannelBase :: !FrameRequestBase}
-                           deriving (Eq, Show)
-
-  data FrameRequestResponse = FrameRequestResponse{_reqResponseHeader
-                                                   :: !FrameHeader,
-                                                   _reqResponseBase :: !FrameRequestBase}
-                            deriving (Eq, Show)
-
-  data FrameRequestFNF = FrameRequestFNF{_reqFNFHeader ::
-                                         !FrameHeader,
-                                         _reqFNFBase :: !FrameRequestBase}
+  data SetupParameters = SetupParameters{version :: !ProtocolVersion,
+                                         keepaliveTime :: !Word32, maxLifetime :: !Word32,
+                                         _setupResumeToken :: !ResumeIdentificationToken,
+                                         metadataMimeType :: !String, dataMimeType :: !String}
                        deriving (Eq, Show)
 
-  data FrameMetadataPush = FrameMetadataPush{_metadataPushHeader ::
-                                             !FrameHeader,
-                                             _metadataPayload :: Payload}
-                         deriving (Eq, Show)
-
-  data FrameCancel = FrameCancel{_cancelHeader :: !FrameHeader}
-                   deriving (Eq, Show)
-
-  data FramePayload = FramePayload{_payloadHeader :: !FrameHeader,
-                                   _payloadPayload :: Payload}
-                    deriving (Eq, Show)
-
-  data FrameError = FrameError{_errorHeader :: !FrameHeader,
-                               errorCode :: !ErrorCode, _errorPayload :: Payload}
-                  deriving (Eq, Show)
-
-  data FrameKeepAlive = FrameKeepAlive{_keepAliveHeader ::
-                                       !FrameHeader,
-                                       resumePosition :: !ResumePosition,
-                                       _keepAlivePayload :: Payload}
-                      deriving (Eq, Show)
-
-  data FrameSetup = FrameSetup{_setupHeader :: !FrameHeader,
-                               versionMajor :: !Word16, versionMinor :: !Word16,
-                               keepaliveTime :: !Word32, maxLifetime :: !Word32,
-                               _setupResumeToken :: !ResumeIdentificationToken,
-                               metadataMimeType :: !String, dataMimeType :: !String,
-                               _setupPayload :: Payload}
-                  deriving (Eq, Show)
-
-  data FrameLease = FrameLease{_leaseHeader :: !FrameHeader,
-                               ttl :: Word32, numberOfRequests :: Word32,
-                               leaseMetadata :: Maybe BS.ByteString}
-                  deriving (Eq, Show)
-
-  data FrameResume = FrameResume{_resumeHeader :: !FrameHeader,
-                                 _resumeResumeToken :: !ResumeIdentificationToken,
-                                 lastReceivedServerPosition :: !ResumePosition,
-                                 clientPosition :: !ResumePosition,
-                                 protocolVersion :: !ProtocolVersion}
-                   deriving (Eq, Show)
-
-  data FrameResumeOK = FrameResumeOK{_resumeOKHeader :: !FrameHeader,
-                                     position :: !ResumePosition}
-                     deriving (Eq, Show)
+  data Frame = FrameRequestN{frameHeader :: !FrameHeader,
+                             requestN :: !RequestN}
+             | FrameRequestStream{frameHeader :: !FrameHeader,
+                                  requestN :: !RequestN, payload :: Payload}
+             | FrameRequestChannel{frameHeader :: !FrameHeader,
+                                   requestN :: !RequestN, payload :: Payload}
+             | FrameRequestResponse{frameHeader :: !FrameHeader,
+                                    requestN :: !RequestN, payload :: Payload}
+             | FrameRequestFNF{frameHeader :: !FrameHeader,
+                               requestN :: !RequestN, payload :: Payload}
+             | FrameMetadataPush{frameHeader :: !FrameHeader,
+                                 _metadata :: Metadata}
+             | FrameCancel{frameHeader :: !FrameHeader}
+             | FramePayload{frameHeader :: !FrameHeader, payload :: Payload}
+             | FrameError{frameHeader :: !FrameHeader, errorCode :: !ErrorCode,
+                          payload :: Payload}
+             | FrameKeepAlive{frameHeader :: !FrameHeader,
+                              resumePosition :: !ResumePosition, payload :: Payload}
+             | FrameSetup{frameHeader :: !FrameHeader,
+                          setupParameters :: !SetupParameters, payload :: Payload}
+             | FrameLease{frameHeader :: !FrameHeader, leaseTtl :: !LeaseTTL,
+                          leaseNumOfRequests :: !LeaseNumOfRequests, _metadata :: Metadata}
+             | FrameResume{frameHeader :: !FrameHeader,
+                           resumeToken :: !ResumeIdentificationToken,
+                           lastReceivedServerPosition :: !ResumePosition,
+                           clientPosition :: !ResumePosition,
+                           protocolVersion :: !ProtocolVersion}
+             | FrameResumeOK{frameHeader :: !FrameHeader,
+                             position :: !ResumePosition}
+             deriving (Eq, Show)
   |]
 
-instance HasFrameHeader FrameRequestN where
-  frameHeader = _reqNframeHeader
 
-instance HasFrameHeader FrameRequestStream where
-  frameHeader = _reqStreamHeader
-instance HasFrameRequestBase FrameRequestStream where
-  frameRequestBase = _reqStreamBase
-
-instance HasFrameHeader FrameRequestChannel where
-  frameHeader = _reqChannelHeader
-instance HasFrameRequestBase FrameRequestChannel where
-  frameRequestBase = _reqChannelBase
-
-instance HasFrameHeader FrameRequestResponse where
-  frameHeader = _reqResponseHeader
-instance HasFrameRequestBase FrameRequestResponse  where
-  frameRequestBase = _reqResponseBase
-
-instance HasFrameHeader FrameRequestFNF where
-  frameHeader = _reqFNFHeader
-instance HasFrameRequestBase FrameRequestFNF where
-  frameRequestBase = _reqFNFBase
-
-instance HasFrameHeader FrameMetadataPush where
-  frameHeader = _metadataPushHeader
-instance HasPayload FrameMetadataPush where
-  payload = _metadataPayload
-
-instance HasFrameHeader FrameCancel where
-  frameHeader = _cancelHeader
-
-instance HasFrameHeader FramePayload where
-  frameHeader = _payloadHeader
-instance HasPayload FramePayload where
-  payload = _payloadPayload
-
-instance HasFrameHeader FrameError where
-  frameHeader = _errorHeader
-instance HasPayload FrameError where
-  payload = _errorPayload
-
-instance HasFrameHeader FrameKeepAlive where
-  frameHeader = _keepAliveHeader
-instance HasPayload FrameKeepAlive where
-  payload = _keepAlivePayload
-
-instance HasFrameHeader FrameSetup where
-  frameHeader = _setupHeader
-instance HasPayload FrameSetup where
-  payload = _setupPayload
-instance HasResumeIdentificationToken FrameSetup where
-  resumeIdentificationToken = _setupResumeToken
-
-instance HasFrameHeader FrameLease where
-  frameHeader = _leaseHeader
-
-instance HasFrameHeader FrameResume where
-  frameHeader = _resumeHeader
-instance HasResumeIdentificationToken FrameResume where
-  resumeIdentificationToken = _resumeResumeToken
-
-instance HasFrameHeader FrameResumeOK where
-  frameHeader = _resumeOKHeader
 
 allowedFlags :: FrameType -> [FrameFlag]
 allowedFlags t
@@ -317,51 +218,55 @@ filterFlags :: FrameType -> [FrameFlag] -> [FrameFlag]
 filterFlags _ [] = [EmptyFlag]
 filterFlags t fs = filter (\x -> elem x $ allowedFlags t) fs
 
-newFrameRequestN streamId n = FrameRequestN n (FrameHeader RequestNType [EmptyFlag] streamId)
-newFrameRequestStream streamId flags n payload =
+frameRequestN streamId n = FrameRequestN (FrameHeader RequestNType [EmptyFlag] streamId) n
+frameRequestStream streamId flags n payload =
   FrameRequestStream
     (FrameHeader
        RequestStreamType
        (filterFlags RequestStreamType (flags ++ (view payloadFlags payload)))
        streamId)
-    (FrameRequestBase n payload)
-newFrameRequestChannel streamId flags n payload =
+    n
+    payload
+frameRequestChannel streamId flags n payload =
   FrameRequestChannel
     (FrameHeader
        RequestChannelType
        (filterFlags RequestChannelType (flags ++ (view payloadFlags payload)))
        streamId)
-    (FrameRequestBase n payload)
-newFrameRequestResponse streamId flags n payload =
+    n
+    payload
+frameRequestResponse streamId flags n payload =
   FrameRequestResponse
     (FrameHeader
        RequestResponseType
        (filterFlags RequestResponseType (flags ++ (view payloadFlags payload)))
        streamId)
-    (FrameRequestBase n payload)
-newFrameRequestFNF streamId flags n payload =
+    n
+    payload
+frameRequestFNF streamId flags n payload =
   FrameRequestFNF
     (FrameHeader
        RequestFNFType
        (filterFlags RequestFNFType (flags ++ (view payloadFlags payload)))
        streamId)
-    (FrameRequestBase n payload)
+    n
+    payload
 
-newFrameMetadataPush :: BS.ByteString -> FrameMetadataPush
-newFrameMetadataPush m =
+frameMetadataPush m =
   FrameMetadataPush
     (FrameHeader MetadataPushType [MetadataFlag] 0)
-    (Payload [] BS.empty m)
+    m
 
-newFrameCancel streamId = FrameCancel (FrameHeader CancelType [] streamId)
-newFramePayload streamId payload =
+frameCancel streamId = FrameCancel (FrameHeader CancelType [] streamId)
+framePayload streamId payload =
   FramePayload
     (FrameHeader
        PayloadType
        (filterFlags PayloadType (view payloadFlags payload))
        streamId)
     payload
-newFrameError streamId errorCode payload =
+
+frameError streamId errorCode payload =
   FrameError
     (FrameHeader
        ErrorType
@@ -369,34 +274,35 @@ newFrameError streamId errorCode payload =
        streamId)
     errorCode
     payload
-newFrameKeepAlive flags position metadata =
+frameKeepAlive flags position metadata =
   FrameKeepAlive
     (FrameHeader KeepAliveType (filterFlags KeepAliveType flags) 0)
     position
-    (Payload [] BS.empty metadata)
+    (Payload [] B.empty metadata)
 
 -- FIXME maxKeepaliveTime maxLifetime and >0 bound checks
-newFrameSetup flags versionMajor versionMinor keepaliveTime maxLifeTime token metadataMimeType dataMimeType payload =
+frameSetup flags versionMajor versionMinor keepaliveTime maxLifeTime token metadataMimeType dataMimeType payload =
   FrameSetup
     (FrameHeader
        SetupType
        (filterFlags SetupType (flags ++ (view payloadFlags payload)))
        0)
-    versionMajor
-    versionMinor
-    keepaliveTime
-    maxLifeTime
-    token
-    metadataMimeType
-    dataMimeType
+    (SetupParameters
+       (ProtocolVersion versionMajor versionMinor)
+       keepaliveTime
+       maxLifeTime
+       token
+       metadataMimeType
+       dataMimeType)
     payload
     
-newFrameLease ttl numberOfRequests Nothing =
+frameLease ttl numberOfRequests Nothing =
   FrameLease (FrameHeader LeaseType [EmptyFlag] 0) ttl numberOfRequests Nothing
-newFrameLease ttl numberOfRequests m =
+frameLease ttl numberOfRequests m =
   FrameLease (FrameHeader LeaseType [MetadataFlag] 0) ttl numberOfRequests m
 
-newFrameResume token last client proto =
+frameResume token last client proto =
   FrameResume (FrameHeader ResumeType [EmptyFlag] 0) token last client proto
-newFrameResumeOK pos =
+frameResumeOK pos =
   FrameResumeOK (FrameHeader ResumeOKType [EmptyFlag] 0) pos
+
