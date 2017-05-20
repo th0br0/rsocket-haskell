@@ -4,7 +4,7 @@
 module RSocket.Frames where
 
 import           Data.Bits
-import qualified Data.ByteString.Lazy as B
+import qualified Data.ByteString as B
 import qualified Data.Map.Strict      as Map
 import           Data.Tuple
 import           Data.Word
@@ -12,7 +12,7 @@ import           Data.String
 import           Data.Int
 import           Control.Lens         hiding (Empty)
 
-type StreamId = Word32
+type StreamId = Word32 
 type FrameFlags = Word16
 type ResumePosition = Int64
 type Metadata = Maybe B.ByteString 
@@ -142,6 +142,8 @@ allFrameFlags a = Map.foldlWithKey' testFlag [] frameFlagMap
   where testFlag xs k v
           | isFrameFlag a k = k : xs
           | otherwise = xs
+
+
 
 
 data ResumeIdentificationToken = ResumeIdentificationToken [Word8]
@@ -305,4 +307,3 @@ frameResume token last client proto =
   FrameResume (FrameHeader ResumeType [EmptyFlag] 0) token last client proto
 frameResumeOK pos =
   FrameResumeOK (FrameHeader ResumeOKType [EmptyFlag] 0) pos
-
