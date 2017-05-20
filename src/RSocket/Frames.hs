@@ -15,8 +15,12 @@ import           Control.Lens         hiding (Empty)
 type StreamId = Word32 
 type FrameFlags = Word16
 type ResumePosition = Int64
-type Metadata = Maybe B.ByteString 
-type Data = B.ByteString 
+newtype Metadata =
+  Metadata B.ByteString
+  deriving (Eq, Show)
+newtype Data =
+  Data B.ByteString
+  deriving (Eq, Show)
 type LeaseTTL = Word32
 type LeaseNumOfRequests = Word32 
 type RequestN = Word32
@@ -152,8 +156,8 @@ data ResumeIdentificationToken = ResumeIdentificationToken [Word8]
 declareLenses
   [d|
 
-  data Payload = Payload{payloadFlags :: ![FrameFlag],
-                         content :: Data, metadata :: Metadata}
+  data Payload = Payload{
+                         content :: Maybe Data, metadata :: Maybe Metadata}
                deriving (Eq, Show)
 
   data ProtocolVersion = ProtocolVersion{protocolVersionMajor ::
@@ -182,7 +186,7 @@ declareLenses
              | FrameRequestFNF{frameHeader :: !FrameHeader,
                                requestN :: !RequestN, payload :: Payload}
              | FrameMetadataPush{frameHeader :: !FrameHeader,
-                                 _metadata :: Metadata}
+                                 _metadata :: Maybe Metadata}
              | FrameCancel{frameHeader :: !FrameHeader}
              | FramePayload{frameHeader :: !FrameHeader, payload :: Payload}
              | FrameError{frameHeader :: !FrameHeader, errorCode :: !ErrorCode,
@@ -192,7 +196,7 @@ declareLenses
              | FrameSetup{frameHeader :: !FrameHeader,
                           setupParameters :: !SetupParameters, payload :: Payload}
              | FrameLease{frameHeader :: !FrameHeader, leaseTtl :: !LeaseTTL,
-                          leaseNumOfRequests :: !LeaseNumOfRequests, _metadata :: Metadata}
+                          leaseNumOfRequests :: !LeaseNumOfRequests, _metadata :: Maybe Metadata}
              | FrameResume{frameHeader :: !FrameHeader,
                            resumeToken :: !ResumeIdentificationToken,
                            lastReceivedServerPosition :: !ResumePosition,
@@ -220,12 +224,15 @@ filterFlags :: FrameType -> [FrameFlag] -> [FrameFlag]
 filterFlags _ [] = [EmptyFlag]
 filterFlags t fs = filter (\x -> elem x $ allowedFlags t) fs
 
+payloadFlags (Payload _ Nothing) = []
+payloadFlags (Payload _ (Just _)) = [MetadataFlag]
+
 frameRequestN streamId n = FrameRequestN (FrameHeader RequestNType [EmptyFlag] streamId) n
 frameRequestStream streamId flags n payload =
   FrameRequestStream
     (FrameHeader
        RequestStreamType
-       (filterFlags RequestStreamType (flags ++ (view payloadFlags payload)))
+       (filterFlags RequestStreamType flags)
        streamId)
     n
     payload
@@ -233,7 +240,7 @@ frameRequestChannel streamId flags n payload =
   FrameRequestChannel
     (FrameHeader
        RequestChannelType
-       (filterFlags RequestChannelType (flags ++ (view payloadFlags payload)))
+       (filterFlags RequestChannelType flags)
        streamId)
     n
     payload
@@ -241,7 +248,7 @@ frameRequestResponse streamId flags n payload =
   FrameRequestResponse
     (FrameHeader
        RequestResponseType
-       (filterFlags RequestResponseType (flags ++ (view payloadFlags payload)))
+       (filterFlags RequestResponseType flags)
        streamId)
     n
     payload
@@ -249,45 +256,41 @@ frameRequestFNF streamId flags n payload =
   FrameRequestFNF
     (FrameHeader
        RequestFNFType
-       (filterFlags RequestFNFType (flags ++ (view payloadFlags payload)))
+       (filterFlags RequestFNFType flags)
        streamId)
     n
     payload
 
 frameMetadataPush m =
-  FrameMetadataPush
-    (FrameHeader MetadataPushType [MetadataFlag] 0)
-    m
+  FrameMetadataPush (FrameHeader MetadataPushType [MetadataFlag] 0) m
 
 frameCancel streamId = FrameCancel (FrameHeader CancelType [] streamId)
-framePayload streamId payload =
+framePayload streamId flags payload =
   FramePayload
     (FrameHeader
        PayloadType
-       (filterFlags PayloadType (view payloadFlags payload))
+       (filterFlags PayloadType (flags ++ (payloadFlags payload)))
        streamId)
     payload
 
 frameError streamId errorCode payload =
   FrameError
-    (FrameHeader
-       ErrorType
-       (filterFlags ErrorType (view payloadFlags payload))
-       streamId)
+    (FrameHeader ErrorType (payloadFlags payload) streamId)
     errorCode
     payload
+
 frameKeepAlive flags position metadata =
   FrameKeepAlive
     (FrameHeader KeepAliveType (filterFlags KeepAliveType flags) 0)
     position
-    (Payload [] B.empty metadata)
+    (Payload Nothing $ Just metadata)
 
 -- FIXME maxKeepaliveTime maxLifetime and >0 bound checks
 frameSetup flags versionMajor versionMinor keepaliveTime maxLifeTime token metadataMimeType dataMimeType payload =
   FrameSetup
     (FrameHeader
        SetupType
-       (filterFlags SetupType (flags ++ (view payloadFlags payload)))
+       (filterFlags SetupType flags)
        0)
     (SetupParameters
        (ProtocolVersion versionMajor versionMinor)
@@ -298,8 +301,6 @@ frameSetup flags versionMajor versionMinor keepaliveTime maxLifeTime token metad
        dataMimeType)
     payload
     
-frameLease ttl numberOfRequests Nothing =
-  FrameLease (FrameHeader LeaseType [EmptyFlag] 0) ttl numberOfRequests Nothing
 frameLease ttl numberOfRequests m =
   FrameLease (FrameHeader LeaseType [MetadataFlag] 0) ttl numberOfRequests m
 

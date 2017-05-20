@@ -4,7 +4,7 @@ module RSocket
 
 import RSocket.Frames
 import RSocket.Types
-import RSocket.ProtoV10
+import RSocket.Wireformat.ProtoV10
 
 someFunc :: IO ()
 someFunc = putStrLn "someFunc"
