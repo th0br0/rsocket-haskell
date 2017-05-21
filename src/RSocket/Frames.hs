@@ -23,7 +23,7 @@ newtype Payload =
   deriving (Eq, Show)
 type LeaseTTL = Word32
 type LeaseNumOfRequests = Word32 
-type RequestN = Word32
+type RequestN = Int32 
   
 
 data FrameType
@@ -134,18 +134,19 @@ frameFlagMap =
     , (NextFlag, 5)
     ] :: Map.Map FrameFlag Int
 
-setFrameFlag :: Bits a => a -> [FrameFlag] -> a
-setFrameFlag v []     = v
-setFrameFlag v (f:fs) = setFrameFlag (setBit v (frameFlagMap Map.! f)) fs
+setFrameFlag :: Bits a => [FrameFlag] -> a-> a
+setFrameFlag [] v     = v
+setFrameFlag (f:fs) v = setFrameFlag fs (setBit v (frameFlagMap Map.! f))
 
-isFrameFlag :: Bits a => a -> FrameFlag -> Bool
-isFrameFlag v f = testBit v (frameFlagMap Map.! f)
+isFrameFlag :: Bits a => FrameFlag -> a -> Bool
+isFrameFlag f v = testBit v (frameFlagMap Map.! f)
 
 allFrameFlags :: Bits a => a -> [FrameFlag]
 allFrameFlags a = Map.foldlWithKey' testFlag [] frameFlagMap
-  where testFlag xs k v
-          | isFrameFlag a k = k : xs
-          | otherwise = xs
+  where
+    testFlag xs k v
+      | isFrameFlag k a = k : xs
+      | otherwise = xs
 
 
 
@@ -174,17 +175,16 @@ declareLenses
                        deriving (Eq, Show)
 
   data Frame = FrameSetup{header :: !FrameHeader,
-                          setupParameters :: !SetupParameters,
-                          metadata :: Maybe Metadata, payload :: Maybe Payload}
+                          setupParameters :: !SetupParameters, metadata :: Maybe Metadata,
+                          payload :: Maybe Payload}
              | FrameLease{header :: !FrameHeader, leaseTTL :: !LeaseTTL,
                           leaseNumOfRequests :: !LeaseNumOfRequests,
                           metadata :: Maybe Metadata}
              | FrameKeepAlive{header :: !FrameHeader,
                               lastPosition :: !ResumePosition, payload :: Maybe Payload}
              | FrameRequestResponse{header :: !FrameHeader,
-                                    requestN :: !RequestN, metadata :: Maybe Metadata,
-                                    payload :: Maybe Payload}
-             | FrameRequestFNF{header :: !FrameHeader, requestN :: !RequestN,
+                                    metadata :: Maybe Metadata, payload :: Maybe Payload}
+             | FrameRequestFNF{header :: !FrameHeader,
                                metadata :: Maybe Metadata, payload :: Maybe Payload}
              | FrameRequestStream{header :: !FrameHeader, requestN :: !RequestN,
                                   metadata :: Maybe Metadata, payload :: Maybe Payload}
@@ -200,10 +200,10 @@ declareLenses
              | FrameMetadataPush{header :: !FrameHeader,
                                  metadata :: Maybe Metadata}
              | FrameResume{header :: !FrameHeader,
+                           protocolVersion :: !ProtocolVersion,
                            resumeToken :: !ResumeIdentificationToken,
                            lastServerPosition :: !ResumePosition,
-                           firstClientPosition :: !ResumePosition,
-                           protocolVersion :: !ProtocolVersion}
+                           firstClientPosition :: !ResumePosition}
              | FrameResumeOK{header :: !FrameHeader,
                              lastClientPosition :: !ResumePosition}
              deriving (Eq, Show)
@@ -245,23 +245,21 @@ frameKeepAlive flags position payload =
     position
     payload
 
-frameRequestResponse streamId flags n metadata payload =
+frameRequestResponse streamId flags metadata payload =
   FrameRequestResponse
     (FrameHeader
        RequestResponseType
        (validateFlags RequestResponseType flags metadata)
        streamId)
-    n
     metadata
     payload
 
-frameRequestFNF streamId flags n metadata payload =
+frameRequestFNF streamId flags metadata payload =
   FrameRequestFNF
     (FrameHeader
        RequestFNFType
        (validateFlags RequestFNFType flags metadata)
        streamId)
-    n
     metadata
     payload
 
@@ -307,6 +305,6 @@ frameMetadataPush m =
   FrameMetadataPush
     (FrameHeader MetadataPushType [MetadataFlag] 0)
     m
-frameResume token last client proto =
-  FrameResume (FrameHeader ResumeType [EmptyFlag] 0) token last client proto
+frameResume version token server client =
+  FrameResume (FrameHeader ResumeType [EmptyFlag] 0) version token server client 
 frameResumeOK pos = FrameResumeOK (FrameHeader ResumeOKType [EmptyFlag] 0) pos
