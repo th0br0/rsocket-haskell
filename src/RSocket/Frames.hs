@@ -18,8 +18,8 @@ type ResumePosition = Int64
 newtype Metadata =
   Metadata B.ByteString
   deriving (Eq, Show)
-newtype Data =
-  Data B.ByteString
+newtype Payload =
+  Payload B.ByteString
   deriving (Eq, Show)
 type LeaseTTL = Word32
 type LeaseNumOfRequests = Word32 
@@ -153,12 +153,10 @@ allFrameFlags a = Map.foldlWithKey' testFlag [] frameFlagMap
 data ResumeIdentificationToken = ResumeIdentificationToken [Word8]
                                 deriving (Eq, Show, Ord)
 
+
+-- FIXME errorData SHOULD be UTF8 encoded string without \NUL
 declareLenses
   [d|
-
-  data Payload = Payload{
-                         content :: Maybe Data, metadata :: Maybe Metadata}
-               deriving (Eq, Show)
 
   data ProtocolVersion = ProtocolVersion{protocolVersionMajor ::
                                          Word16,
@@ -171,43 +169,45 @@ declareLenses
 
   data SetupParameters = SetupParameters{version :: !ProtocolVersion,
                                          keepaliveTime :: !Word32, maxLifetime :: !Word32,
-                                         _setupResumeToken :: !ResumeIdentificationToken,
+                                         setupResumeToken :: !ResumeIdentificationToken,
                                          metadataMimeType :: !String, dataMimeType :: !String}
                        deriving (Eq, Show)
 
-  data Frame = FrameRequestN{frameHeader :: !FrameHeader,
-                             requestN :: !RequestN}
-             | FrameRequestStream{frameHeader :: !FrameHeader,
-                                  requestN :: !RequestN, payload :: Payload}
-             | FrameRequestChannel{frameHeader :: !FrameHeader,
-                                   requestN :: !RequestN, payload :: Payload}
-             | FrameRequestResponse{frameHeader :: !FrameHeader,
-                                    requestN :: !RequestN, payload :: Payload}
-             | FrameRequestFNF{frameHeader :: !FrameHeader,
-                               requestN :: !RequestN, payload :: Payload}
-             | FrameMetadataPush{frameHeader :: !FrameHeader,
-                                 _metadata :: Maybe Metadata}
-             | FrameCancel{frameHeader :: !FrameHeader}
-             | FramePayload{frameHeader :: !FrameHeader, payload :: Payload}
-             | FrameError{frameHeader :: !FrameHeader, errorCode :: !ErrorCode,
-                          payload :: Payload}
-             | FrameKeepAlive{frameHeader :: !FrameHeader,
-                              resumePosition :: !ResumePosition, payload :: Payload}
-             | FrameSetup{frameHeader :: !FrameHeader,
-                          setupParameters :: !SetupParameters, payload :: Payload}
-             | FrameLease{frameHeader :: !FrameHeader, leaseTtl :: !LeaseTTL,
-                          leaseNumOfRequests :: !LeaseNumOfRequests, _metadata :: Maybe Metadata}
-             | FrameResume{frameHeader :: !FrameHeader,
+  data Frame = FrameSetup{header :: !FrameHeader,
+                          setupParameters :: !SetupParameters,
+                          metadata :: Maybe Metadata, payload :: Maybe Payload}
+             | FrameLease{header :: !FrameHeader, leaseTTL :: !LeaseTTL,
+                          leaseNumOfRequests :: !LeaseNumOfRequests,
+                          metadata :: Maybe Metadata}
+             | FrameKeepAlive{header :: !FrameHeader,
+                              lastPosition :: !ResumePosition, payload :: Maybe Payload}
+             | FrameRequestResponse{header :: !FrameHeader,
+                                    requestN :: !RequestN, metadata :: Maybe Metadata,
+                                    payload :: Maybe Payload}
+             | FrameRequestFNF{header :: !FrameHeader, requestN :: !RequestN,
+                               metadata :: Maybe Metadata, payload :: Maybe Payload}
+             | FrameRequestStream{header :: !FrameHeader, requestN :: !RequestN,
+                                  metadata :: Maybe Metadata, payload :: Maybe Payload}
+             | FrameRequestChannel{header :: !FrameHeader,
+                                   requestN :: !RequestN, metadata :: Maybe Metadata,
+                                   payload :: Maybe Payload}
+             | FrameRequestN{header :: !FrameHeader, requestN :: !RequestN}
+             | FrameCancel{header :: !FrameHeader}
+             | FramePayload{header :: !FrameHeader, metadata :: Maybe Metadata,
+                            payload :: Maybe Payload}
+             | FrameError{header :: !FrameHeader, errorCode :: !ErrorCode,
+                          errorData :: Maybe Payload}
+             | FrameMetadataPush{header :: !FrameHeader,
+                                 metadata :: Maybe Metadata}
+             | FrameResume{header :: !FrameHeader,
                            resumeToken :: !ResumeIdentificationToken,
-                           lastReceivedServerPosition :: !ResumePosition,
-                           clientPosition :: !ResumePosition,
+                           lastServerPosition :: !ResumePosition,
+                           firstClientPosition :: !ResumePosition,
                            protocolVersion :: !ProtocolVersion}
-             | FrameResumeOK{frameHeader :: !FrameHeader,
-                             position :: !ResumePosition}
+             | FrameResumeOK{header :: !FrameHeader,
+                             lastClientPosition :: !ResumePosition}
              deriving (Eq, Show)
   |]
-
-
 
 allowedFlags :: FrameType -> [FrameFlag]
 allowedFlags t
@@ -224,87 +224,89 @@ filterFlags :: FrameType -> [FrameFlag] -> [FrameFlag]
 filterFlags _ [] = [EmptyFlag]
 filterFlags t fs = filter (\x -> elem x $ allowedFlags t) fs
 
-payloadFlags (Payload _ Nothing) = []
-payloadFlags (Payload _ (Just _)) = [MetadataFlag]
+validateFlags :: FrameType -> [FrameFlag] -> Maybe Metadata -> [FrameFlag]
+validateFlags t f Nothing = filterFlags t f
+validateFlags t f (Just _) = filterFlags t (f ++ [MetadataFlag])
 
-frameRequestN streamId n = FrameRequestN (FrameHeader RequestNType [EmptyFlag] streamId) n
-frameRequestStream streamId flags n payload =
-  FrameRequestStream
-    (FrameHeader
-       RequestStreamType
-       (filterFlags RequestStreamType flags)
-       streamId)
-    n
+-- FIXME maxKeepaliveTime maxLifetime and >0 bound checks
+frameSetup flags parameters metadata payload =
+  FrameSetup
+    (FrameHeader SetupType (validateFlags SetupType flags metadata) 0)
+    parameters
+    metadata
     payload
-frameRequestChannel streamId flags n payload =
-  FrameRequestChannel
-    (FrameHeader
-       RequestChannelType
-       (filterFlags RequestChannelType flags)
-       streamId)
-    n
+
+frameLease ttl numberOfRequests m =
+  FrameLease (FrameHeader LeaseType (validateFlags LeaseType [] m) 0) ttl numberOfRequests m
+
+frameKeepAlive flags position payload =
+  FrameKeepAlive
+    (FrameHeader KeepAliveType (validateFlags KeepAliveType flags Nothing) 0)
+    position
     payload
-frameRequestResponse streamId flags n payload =
+
+frameRequestResponse streamId flags n metadata payload =
   FrameRequestResponse
     (FrameHeader
        RequestResponseType
-       (filterFlags RequestResponseType flags)
+       (validateFlags RequestResponseType flags metadata)
        streamId)
     n
+    metadata
     payload
-frameRequestFNF streamId flags n payload =
+
+frameRequestFNF streamId flags n metadata payload =
   FrameRequestFNF
     (FrameHeader
        RequestFNFType
-       (filterFlags RequestFNFType flags)
+       (validateFlags RequestFNFType flags metadata)
        streamId)
     n
+    metadata
     payload
 
-frameMetadataPush m =
-  FrameMetadataPush (FrameHeader MetadataPushType [MetadataFlag] 0) m
+frameRequestStream streamId flags n metadata payload =
+  FrameRequestStream
+    (FrameHeader
+       RequestStreamType
+       (validateFlags RequestStreamType flags metadata)
+       streamId)
+    n
+    metadata
+    payload
 
+frameRequestChannel streamId flags n metadata payload =
+  FrameRequestChannel
+    (FrameHeader
+       RequestChannelType
+       (validateFlags RequestChannelType flags metadata)
+       streamId)
+    n
+    metadata
+    payload
+
+frameRequestN streamId n = FrameRequestN (FrameHeader RequestNType [EmptyFlag] streamId) n
 frameCancel streamId = FrameCancel (FrameHeader CancelType [] streamId)
-framePayload streamId flags payload =
+
+framePayload streamId flags metadata payload =
   FramePayload
     (FrameHeader
        PayloadType
-       (filterFlags PayloadType (flags ++ (payloadFlags payload)))
+       (validateFlags PayloadType flags metadata)
        streamId)
+    metadata
     payload
 
 frameError streamId errorCode payload =
   FrameError
-    (FrameHeader ErrorType (payloadFlags payload) streamId)
+    (FrameHeader ErrorType [] streamId)
     errorCode
     payload
 
-frameKeepAlive flags position metadata =
-  FrameKeepAlive
-    (FrameHeader KeepAliveType (filterFlags KeepAliveType flags) 0)
-    position
-    (Payload Nothing $ Just metadata)
-
--- FIXME maxKeepaliveTime maxLifetime and >0 bound checks
-frameSetup flags versionMajor versionMinor keepaliveTime maxLifeTime token metadataMimeType dataMimeType payload =
-  FrameSetup
-    (FrameHeader
-       SetupType
-       (filterFlags SetupType flags)
-       0)
-    (SetupParameters
-       (ProtocolVersion versionMajor versionMinor)
-       keepaliveTime
-       maxLifeTime
-       token
-       metadataMimeType
-       dataMimeType)
-    payload
-    
-frameLease ttl numberOfRequests m =
-  FrameLease (FrameHeader LeaseType [MetadataFlag] 0) ttl numberOfRequests m
-
+frameMetadataPush m =
+  FrameMetadataPush
+    (FrameHeader MetadataPushType [MetadataFlag] 0)
+    m
 frameResume token last client proto =
   FrameResume (FrameHeader ResumeType [EmptyFlag] 0) token last client proto
-frameResumeOK pos =
-  FrameResumeOK (FrameHeader ResumeOKType [EmptyFlag] 0) pos
+frameResumeOK pos = FrameResumeOK (FrameHeader ResumeOKType [EmptyFlag] 0) pos

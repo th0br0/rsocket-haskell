@@ -30,7 +30,6 @@ library
   extensions:          TemplateHaskell
                      , TypeSynonymInstances
                      , FlexibleInstances
-                     , OverlappingInstances
 
 test-suite rsocket-test
   type:                exitcode-stdio-1.0

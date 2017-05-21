@@ -44,10 +44,6 @@ instance Serialize FrameHeader where
 
 maxMetadataLength = 0xFFFFFF -- 24 bit max value
 metadataLengthSize = 3 -- bytes
-payloadFramingSize payload =
-  case (view metadata payload) of
-    Nothing -> 0
-    otherwise -> metadataLengthSize
 
 resumeIdTokenFramingLength flags token =
   case (elem ResumeEnableFlag flags) of
@@ -61,33 +57,50 @@ peekFrameType =
     typeWord <- fmap (`shiftR` 2) getWord8
     return $ Map.lookup typeWord frameType'
 
-instance Serialize Metadata where
-  put (Metadata m)
-    | (B.null m) = flush
-    | (B.length m) > metadataLengthSize = fail "Metadata too big to serialize"
-    | otherwise = do
-      let length = fromIntegral (B.length m) :: Word32
-      putWord32be length >> putByteString m
-  get = do
-    length <- fmap (fromIntegral :: Word32 -> Int) getWord32be
-    if length > maxMetadataLength
-      then fail "Metadata is too big to deserialize"
-      else fmap Metadata $ getByteString length
+putMetadataWithLength Nothing = putWord16be 0 >> putWord8 0
+putMetadataWithLength (Just m)
+  | (B.null m) = putWord16be 0 >> putWord8 0
+  | (B.length m) < (2 ^ 21) = fail "Metadata is longer than 2**21-1"
+  | otherwise = do
+    let length = fromIntegral (B.length m) :: Word32
+        lengthEnc :: [Word8]
+        lengthEnc =
+          map
+            fromIntegral
+            [length `shiftR` 16, (length `shiftR` 8) .&. 0xFF, length .&. 0xFF]
+    putWord8 (lengthEnc !! 0) >> putWord8 (lengthEnc !! 1) >>
+      putWord8 (lengthEnc !! 2) >>
+      putByteString m
+-- FIXME identity?
+putMetadataWithoutLength Nothing = flush
+putMetadataWithoutLength (Just m) = putByteString m
 
-instance Serialize Data where
-  put (Data d) = put d
-  get = fmap Data $ remaining >>= getByteString
+getMetadataWithoutLength :: Get (Maybe Metadata)
+getMetadataWithoutLength = do
+  available <- remaining
+
+  if (available == 0) then return Nothing else do
+    d <- getByteString available
+    return $ Just $ Metadata d
+getMetadataWithLength :: Get (Maybe Metadata)
+getMetadataWithLength = do
+  w1 <- fromIntegral <$> getWord8 :: Get Word32
+  w2 <- fromIntegral <$> getWord8 :: Get Word32
+  w3 <- fromIntegral <$> getWord8 :: Get Word32
+
+  let length = fromIntegral $ ((w1 `shiftL` 16) .|. (w2 `shiftL` 8) .|. w3) :: Int
+
+  if (length == 0) then return Nothing else do
+    d <- getByteString length 
+    return $ Just $ Metadata d
+
+instance Serialize Payload where
+  put (Payload d) = put d
+  get = fmap Payload $ remaining >>= getByteString
 
 instance Serialize ErrorCode where
   put e = putWord32be $ errorCodeMap Map.! e 
   get = fmap (errorCodeMap' Map.!) getWord32be
-
-instance Serialize Payload where
-  put (Payload Nothing Nothing) = flush
-  put (Payload (Just p) Nothing) = put p
-  put (Payload Nothing (Just m)) = put m
-  put (Payload (Just p) (Just m)) = put m >> put p
-  get = fail "Not implemented"
 
 instance Serialize Frame where
   put (FrameError header code payload) = put header >> put code >> put payload
