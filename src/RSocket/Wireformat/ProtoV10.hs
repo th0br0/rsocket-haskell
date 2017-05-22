@@ -21,8 +21,12 @@ import RSocket.Wireformat.Validators
 toI32 :: Integral a => a -> Int32
 toI32 = fromIntegral
 
+validateFrameType :: Maybe FrameType -> Get FrameType
+validateFrameType Nothing = fail "Invalid FrameType"
+validateFrameType (Just x) = return x
+
 instance Serialize FrameHeader where
-  put (FrameHeader t fs sid) =
+  put (FrameHeader sid t fs) =
     putInt32be (toI32 sid) >> putWord8 ((typeWord `shiftL` 2) .|. (flag8s !! 1)) >>
     putWord8 (flag8s !! 0)
     where
@@ -31,30 +35,24 @@ instance Serialize FrameHeader where
       flag8s =
         map fromIntegral [flags .&. 0xFF, (flags .&. 0xFF00) `shiftR` 8] :: [Word8]
   get = do
-    id <- fmap validateStreamId getInt32be
+    id <- validateStreamId <$> getInt32be
     if (isNothing id)
       then fail "Invalid Stream ID"
       else do
         first <- getWord8
         second <- getWord8
-        let frametype =
-              validateFrameType $ Map.lookup (first `shiftR` 2) frameType'
-            firstDec = (fromIntegral (first .&. 0x3) :: Word16) `shiftL` 8
+        frametype <-
+              validateFrameType $ (Map.lookup (first `shiftR` 2) frameType')
+        let firstDec = (fromIntegral (first .&. 0x3) :: Word16) `shiftL` 8
             flags = (firstDec .|. (fromIntegral second))
             parsedFlags = filterFlags frametype $ allFrameFlags flags
-        return $ FrameHeader frametype parsedFlags (fromJust id)
+        return $ FrameHeader (fromJust id) frametype parsedFlags
 
 resumeIdTokenFramingLength flags token =
   case (elem ResumeEnableFlag flags) of
     True -> (sizeOf (undefined :: Word16)) + (sizeOf token)
     False -> 0
 
-peekStreamId = lookAhead $ validateStreamId <$ getInt32be
-peekFrameType =
-  lookAhead $ do
-    skip (sizeOf $ (undefined :: Word32))
-    typeWord <- fmap (`shiftR` 2) getWord8
-    return $ Map.lookup typeWord frameType'
 
 putMetadataWithLength Nothing = putWord16be 0 >> putWord8 0
 putMetadataWithLength (Just (Metadata m))
@@ -103,13 +101,13 @@ putPayload (Just (Payload p)) = putByteString p
 
 instance Serialize ErrorCode where
   put e = putWord32be $ errorCodeMap Map.! e 
-  get = fmap (errorCodeMap' Map.!) getWord32be
+  get = (errorCodeMap' Map.!) <$> getWord32be
 
 instance Serialize ProtocolVersion where
   put e =
     putWord16be (view (protocolVersionMajor) e) >>
     putWord16be (view (protocolVersionMinor) e)
-  get = fail "Not implemented"
+  get = ProtocolVersion <$> getWord16be <*> getWord16be
 
 -- FIXME bounds checks mimetype lengths
 putSetupParameters header (SetupParameters version keepalive lifetime (ResumeIdentificationToken token) metaMime dataMime) =
@@ -162,4 +160,38 @@ instance Serialize Frame where
     putInt64be server >>
     putInt64be client
   put (FrameResumeOK header position) = put header >> putInt64be position
-  get = fail "Frame not implemented yet."
+  get = (get :: Get FrameHeader) >>= go
+    where
+      go h@(FrameHeader _ ErrorType flags) = FrameError h <$> code <*> payload
+        where
+          code =
+            ((`Map.lookup` errorCodeMap') <$> getWord32be) >>= \x ->
+              case x of
+                Nothing -> fail "Invalid error"
+                Just c -> return c
+          payload =
+            remaining >>= \x ->
+              case x of
+                0 -> return Nothing
+                _ -> Just <$> Payload <$> getByteString x
+      go _ = fail "not implemented"
+{-
+  do
+    streamIdM <- validateStreamId <$ getInt32be
+    case streamIdM of
+      Nothing -> fail "Invalid stream id."
+      Just streamId -> do
+        w2 <- getWord8
+        flagWord <-
+          (((fromIntegral $ (w2 .&. 0x3) :: Word16) `shiftL` 8) .&.) <$>
+          fromIntegral <Text$>
+          getWord8
+        let frameTypeM = Map.lookup (w2 `shiftR` 2) frameType'
+            flags = allFrameFlags (w2 .&. 0x3)
+        case frameTypeM of
+          Nothing -> fail "Unknown frame type."
+          (Just frameType) -> getFrame (FrameHeader frameType flags streamId)
+-}
+
+getFrame :: FrameHeader -> Get Frame
+getFrame _ = fail "test"

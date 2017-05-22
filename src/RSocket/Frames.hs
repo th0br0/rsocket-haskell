@@ -86,7 +86,7 @@ data ErrorCode
     -- (almost identical to REJECTED but doesn't garantee that no side-effects have been started). Stream ID MUST be non-0.
   | CancelledError
     -- The request is invalid. Stream ID MUST be non-0.
-  | InvalidError
+  | InvalidRequestError
   deriving (Show, Eq, Enum, Ord)
 
 errorCodeMap =
@@ -99,7 +99,7 @@ errorCodeMap =
     , (ApplicationError, 0x0201)
     , (RejectedError, 0x0202)
     , (CancelledError, 0x0203)
-    , (InvalidError, 0x0204)
+    , (InvalidRequestError, 0x0204)
     ] :: Map.Map ErrorCode Word32
 errorCodeMap' = Map.fromList $ map swap (Map.assocs errorCodeMap)
 
@@ -164,8 +164,8 @@ declareLenses
                                          protocolVersionMinor :: Word16}
                        deriving (Eq, Show, Ord)
 
-  data FrameHeader = FrameHeader{headerType :: !FrameType,
-                                 headerFlags :: ![FrameFlag], headerStreamId :: !StreamId}
+  data FrameHeader = FrameHeader{headerStreamId :: !StreamId,
+                                 headerType :: !FrameType, headerFlags :: ![FrameFlag]}
                    deriving (Eq, Show)
 
   data SetupParameters = SetupParameters{version :: !ProtocolVersion,
@@ -231,44 +231,48 @@ validateFlags t f (Just _) = filterFlags t (f ++ [MetadataFlag])
 -- FIXME maxKeepaliveTime maxLifetime and >0 bound checks
 frameSetup flags parameters metadata payload =
   FrameSetup
-    (FrameHeader SetupType (validateFlags SetupType flags metadata) 0)
+    (FrameHeader 0 SetupType (validateFlags SetupType flags metadata))
     parameters
     metadata
     payload
 
 frameLease ttl numberOfRequests m =
-  FrameLease (FrameHeader LeaseType (validateFlags LeaseType [] m) 0) ttl numberOfRequests m
+  FrameLease
+    (FrameHeader 0 LeaseType (validateFlags LeaseType [] m))
+    ttl
+    numberOfRequests
+    m
 
 frameKeepAlive flags position payload =
   FrameKeepAlive
-    (FrameHeader KeepAliveType (validateFlags KeepAliveType flags Nothing) 0)
+    (FrameHeader 0 KeepAliveType (validateFlags KeepAliveType flags Nothing))
     position
     payload
 
 frameRequestResponse streamId flags metadata payload =
   FrameRequestResponse
     (FrameHeader
+       streamId
        RequestResponseType
-       (validateFlags RequestResponseType flags metadata)
-       streamId)
+       (validateFlags RequestResponseType flags metadata))
     metadata
     payload
 
 frameRequestFNF streamId flags metadata payload =
   FrameRequestFNF
     (FrameHeader
+       streamId
        RequestFNFType
-       (validateFlags RequestFNFType flags metadata)
-       streamId)
+       (validateFlags RequestFNFType flags metadata))
     metadata
     payload
 
 frameRequestStream streamId flags n metadata payload =
   FrameRequestStream
     (FrameHeader
+       streamId
        RequestStreamType
-       (validateFlags RequestStreamType flags metadata)
-       streamId)
+       (validateFlags RequestStreamType flags metadata))
     n
     metadata
     payload
@@ -276,35 +280,36 @@ frameRequestStream streamId flags n metadata payload =
 frameRequestChannel streamId flags n metadata payload =
   FrameRequestChannel
     (FrameHeader
+       streamId
        RequestChannelType
-       (validateFlags RequestChannelType flags metadata)
-       streamId)
+       (validateFlags RequestChannelType flags metadata))
     n
     metadata
     payload
 
-frameRequestN streamId n = FrameRequestN (FrameHeader RequestNType [EmptyFlag] streamId) n
-frameCancel streamId = FrameCancel (FrameHeader CancelType [] streamId)
+frameRequestN streamId n =
+  FrameRequestN (FrameHeader streamId RequestNType [EmptyFlag]) n
+frameCancel streamId = FrameCancel (FrameHeader streamId CancelType [])
 
 framePayload streamId flags metadata payload =
   FramePayload
     (FrameHeader
+       streamId
        PayloadType
-       (validateFlags PayloadType flags metadata)
-       streamId)
+       (validateFlags PayloadType flags metadata))
     metadata
     payload
 
 frameError streamId errorCode payload =
   FrameError
-    (FrameHeader ErrorType [] streamId)
+    (FrameHeader streamId ErrorType [])
     errorCode
     payload
 
 frameMetadataPush m =
   FrameMetadataPush
-    (FrameHeader MetadataPushType [MetadataFlag] 0)
+    (FrameHeader 0 MetadataPushType [MetadataFlag])
     m
 frameResume version token server client =
-  FrameResume (FrameHeader ResumeType [EmptyFlag] 0) version token server client 
-frameResumeOK pos = FrameResumeOK (FrameHeader ResumeOKType [EmptyFlag] 0) pos
+  FrameResume (FrameHeader 0 ResumeType [EmptyFlag]) version token server client 
+frameResumeOK pos = FrameResumeOK (FrameHeader 0 ResumeOKType [EmptyFlag]) pos
